@@ -186,9 +186,13 @@ gemm_device(ATensor   const& A,         // (M,K)
   Tensor tAgA = coop_thr_copy_a.partition_S(gA);
   Tensor tBgB = coop_thr_copy_b.partition_S(gB);
 
-  /* Partition C */
-  Tensor tCrC = partition_fragment_C(mma, select<0,1>(wg_tile));
-  Tensor tCgC = thr_mma.partition_C(gC);    /* also matches copy_c's source layout */
+  /* Partition C.  Accumulator carries the MMA-C layout; the store fragment/tensor come
+     from the store copy (copy_c) so its width can exceed one MMA N-atom; reorder() bridges
+     the two register layouts before the store. */
+  auto thr_copy_c = copy_c.get_slice(local_id);
+  auto tCrC = thr_mma.partition_sg_fragment_C(gC);
+  auto tCrD = thr_copy_c.partition_sg_fragment_S(gC);
+  auto tCgC = thr_copy_c.partition_D(gC);
 
   // ------
   // Kernel
@@ -239,8 +243,10 @@ gemm_device(ATensor   const& A,         // (M,K)
     }
   }
 
-  /* Write C to global memory */
-  copy(copy_c, tCrC, tCgC);
+  /* Write C to global memory: reorder the accumulator into the store's register layout,
+     then store (handles store atoms wider than one MMA N-atom). */
+  reorder(tCrC, tCrD);
+  copy(copy_c, tCrD, tCgC);
 }
 
 template <typename TA, typename TB, typename TC>

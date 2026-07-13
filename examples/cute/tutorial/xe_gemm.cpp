@@ -96,6 +96,7 @@ gemm_device(ATensor   const& A,         // (M,K)
   auto thr_mma    =    mma.get_slice(local_id);
   auto thr_copy_a = copy_a.get_slice(local_id);
   auto thr_copy_b = copy_b.get_slice(local_id);
+  auto thr_copy_c = copy_c.get_slice(local_id);
 
   /* Register fragments for MMA */
   auto tCrA = thr_mma.partition_sg_fragment_A(gA(_,_,0));
@@ -109,9 +110,12 @@ gemm_device(ATensor   const& A,         // (M,K)
   Tensor tAgA = thr_copy_a.partition_S(gA);
   Tensor tBgB = thr_copy_b.partition_S(gB);
 
-  /* Partition C */
-  Tensor tCrC = partition_fragment_C(mma, select<0,1>(wg_tile));
-  Tensor tCgC = thr_mma.partition_C(gC);    /* also matches copy_c's source layout */
+  /* Partition C.  The accumulator carries the MMA-C layout; the store fragment/tensor
+     come from the store copy (copy_c) so the store atom's width can differ from a
+     single MMA N-atom.  reorder() bridges the MMA-C layout to the store layout. */
+  auto tCrC = thr_mma.partition_sg_fragment_C(gC);
+  auto tCrD = thr_copy_c.partition_sg_fragment_S(gC);
+  auto tCgC = thr_copy_c.partition_D(gC);
 
   /* Create prefetch TiledCopy instances */
   auto prefetch_a = make_block_2d_prefetch(copy_a);
@@ -170,8 +174,10 @@ gemm_device(ATensor   const& A,         // (M,K)
     barrier_wait(barrier_scope);
   }
 
-  /* Write C to global memory */
-  copy(copy_c, tCrC, tCgC);
+  /* Write C to global memory: reorder the accumulator into the store's register
+     layout, then store (handles store atoms wider than one MMA N-atom). */
+  reorder(tCrC, tCrD);
+  copy(copy_c, tCrD, tCgC);
 }
 
 template <typename TA, typename TB, typename TC>

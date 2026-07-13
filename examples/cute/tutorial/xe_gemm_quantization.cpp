@@ -121,9 +121,13 @@ gemm_device(ATensor   const& A,         // (M,K)
   Tensor tAgA = thr_copy_a.partition_S(gA);
   Tensor tBgB = thr_copy_b.partition_S(gB);
 
-  /* Partition C */
+  /* Partition C.  Accumulator carries the MMA-C layout; the store fragment/tensor come
+     from the store copy (copy_c) so its width can exceed one MMA N-atom.  reorder() below
+     bridges the MMA-C layout into the store fragment without disturbing tCrC, which is
+     reused for quantization. */
   auto tCrC = thr_mma.partition_sg_fragment_C(gC);
-  Tensor tCgC = thr_mma.partition_C(gC);    /* also matches copy_c's source layout */
+  auto tCrD = thr_copy_c.partition_sg_fragment_S(gC);
+  auto tCgC = thr_copy_c.partition_D(gC);
 
   /* Create prefetch TiledCopy instances */
   auto prefetch_a = make_block_2d_prefetch(copy_a);
@@ -183,8 +187,10 @@ gemm_device(ATensor   const& A,         // (M,K)
   }
 
   if (verify != 0) {
-    /* Write C (GEMM result) to global memory*/
-    copy(copy_c, tCrC, tCgC);
+    /* Write C (GEMM result) to global memory: reorder the accumulator into the store's
+       register layout, then store (handles store atoms wider than one MMA N-atom). */
+    reorder(tCrC, tCrD);
+    copy(copy_c, tCrD, tCgC);
   }
 
   /* Partition quantization output */

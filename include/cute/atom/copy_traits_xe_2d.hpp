@@ -846,6 +846,38 @@ xe_guarded_store_width(int preferred_width, int mma_n, int acc_n)
   return cute::gcd(preferred_width, mma_n);          // single-atom-safe fallback
 }
 
+// Widen an auto-selected D-store atom to a full cache line when the TiledMMA's
+// per-subgroup N-atom count permits it.
+//
+// block_2d_selector sizes the store from a single MMA-C atom, so it never emits a
+// message wider than one N-atom (e.g. XE_STORE_2D<16,8,16> = half a cache line for
+// bf16).  Given the TiledMMA we know the per-subgroup N-atom count and can group
+// g = (512/ValBits)/mma_n adjacent N-atoms into one wider store, guarded exactly as
+// xe_guarded_store_width (whole-atom grouping + even N-atom count) so it only widens
+// when the resulting message tiles the accumulator cleanly.  Stores are always
+// non-transpose, so the selected op is an XE_STORE_2D and only its width changes.
+//
+// Consumers must feed the store through the copy's own partitioning
+// (partition_sg_fragment_S + partition_D) and reorder() the MMA-C accumulator into
+// that fragment, so the wider register layout is honoured.  A consumer that instead
+// stores the raw MMA-C fragment (thr_mma.partition_C) directly must NOT rely on this
+// widening; the shape mismatch is caught at compile time by copy_unpack's asserts.
+template <class ValType, int CopyBits, int Height, int Width, class TiledMMA>
+CUTE_HOST_DEVICE
+constexpr auto
+xe_widen_store_D(XE_STORE_2D<CopyBits, Height, Width> const&, TiledMMA const& mma)
+{
+  constexpr int ValBits   = sizeof_bits_v<ValType>;
+  constexpr int mma_n     = size<1>(typename TiledMMA::AtomShape_MNK{});          // MMA atom N
+  constexpr int tile_n    = size<1>(decltype(select<0,1>(mma.tile_mnk())){});     // WG-tile N
+  constexpr int sg_n      = size<2>(decltype(shape(mma.get_thr_layout_vmnk())){}); // #subgroups in N
+  constexpr int acc_n     = tile_n / (sg_n * mma_n);                              // N-atoms per subgroup
+  constexpr int preferred = 512 / ValBits;                                        // cache-line width (elems)
+  constexpr int width     = xe_guarded_store_width(preferred, mma_n, acc_n);
+  constexpr int cwidth    = width * ValBits / CopyBits;
+  return XE_STORE_2D<CopyBits, Height, cwidth>{};
+}
+
 // Heuristically select a block 2D copy operation.
 //      MemType: type of data in memory
 //      RegType: type of data in registers, as associated with CoordLayout
@@ -1182,9 +1214,14 @@ make_block_2d_copy_D(TiledMMA           const& mma,         // TiledMMA instance
 {
   using MMAType = typename TiledMMA::ValTypeD;
   auto cD = make_identity_tensor(select<0,1>(mma.tile_mnk()));
-  auto op = block_2d_selector<ValType, MMAType, true>(
-    mma.get_slice(0).atom_partition_C(cD).layout(), gstride
-  );
+  // block_2d_selector sizes the store from a single MMA-C atom (one N-atom wide, e.g.
+  // half a cache line for bf16).  Widen it to a full cache line when the per-subgroup
+  // N-atom count permits (CUTLASS9-656); the copy tiler and the consumer's reorder into
+  // partition_sg_fragment_S then honour the wider register layout.
+  auto op = xe_widen_store_D<ValType>(
+    block_2d_selector<ValType, MMAType, true>(
+      mma.get_slice(0).atom_partition_C(cD).layout(), gstride),
+    mma);
   return make_block_2d_copy_CD<ValType>(op, mma, gstride);
 }
 
