@@ -817,6 +817,35 @@ block_2d_transform_selector(DesiredCoordLayout const& layout,
       return Block2DTransform::N;
 }
 
+// Guarded cache-line store width for D/aux 2D block stores.
+//
+// A D-store wants to fill a full 64-byte cache line (preferred_width = 512/ValBits
+// elements in the gmem-contiguous direction).  A single MMA/copy atom, however, is
+// only `mma_n` elements wide, so the per-subgroup accumulator holds `acc_n` N-atom
+// iterations.  Emitting a wider store message groups g = preferred_width / mma_n
+// adjacent N-atoms into one block2d message.  This is only correct when
+//   (1) preferred_width is a whole multiple of mma_n   (groups whole atoms), and
+//   (2) acc_n is a multiple of g                         (no phantom iterations).
+// When either fails we fall back to the single-atom-safe width gcd(preferred, mma_n),
+// which reproduces the pre-widening behaviour (typically == mma_n).
+//
+// N-contiguity of the grouped atoms (required for a single contiguous block store to
+// address the right columns) holds for the standard row-major TiledMMAHelper subgroup
+// layout, where each subgroup owns a contiguous N run.  Non-standard/permuted subgroup
+// layouts that break contiguity should not group; callers that cannot guarantee
+// contiguity must pass acc_n such that the divisibility guard falls back to mma_n.
+CUTE_HOST_DEVICE
+constexpr int
+xe_guarded_store_width(int preferred_width, int mma_n, int acc_n)
+{
+  if (preferred_width > mma_n && (preferred_width % mma_n == 0)) {
+    int g = preferred_width / mma_n;                 // whole N-atoms to group (>= 2)
+    if (acc_n % g == 0)
+      return preferred_width;                        // full cache line, guard passed
+  }
+  return cute::gcd(preferred_width, mma_n);          // single-atom-safe fallback
+}
+
 // Heuristically select a block 2D copy operation.
 //      MemType: type of data in memory
 //      RegType: type of data in registers, as associated with CoordLayout

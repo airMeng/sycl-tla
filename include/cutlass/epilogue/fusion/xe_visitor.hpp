@@ -372,11 +372,15 @@ struct XeAuxStore {
 
     if constexpr (!cute::is_void_v<CopyOpR2G_> || UseBlock2DCopy) {
       // Block 2D copy path (explicit CopyOp or auto-deduced)
+      // Derive the auto aux-store width from the epilogue tile (which already drives the
+      // partitioning below via mma_per_epi), not the raw MMA atom.  This lets the aux/bias
+      // store reach a full cache line whenever the epilogue tile groups multiple N-atoms,
+      // matching the guarded widen applied to the main D store (CUTLASS9-656).
       using ActualCopyOpR2G = cute::conditional_t<
         cute::is_void_v<CopyOpR2G_>,
-        XE_STORE_2D<CopyBits, 
-                   cute::gcd(8, get<0>(MMATile{})), 
-                   cute::gcd(512 / CopyBits, get<1>(MMATile{}))>,
+        XE_STORE_2D<CopyBits,
+                   cute::gcd(8, get<0>(cute::remove_cvref_t<decltype(args.epi_tile)>{})),
+                   cute::gcd(512 / CopyBits, get<1>(cute::remove_cvref_t<decltype(args.epi_tile)>{}))>,
         CopyOpR2G_
       >;
       
@@ -665,11 +669,14 @@ struct XeAuxLoad {
 
     if constexpr (!cute::is_void_v<CopyOpG2R_> || UseBlock2DCopy) {
       // Block 2D copy path (explicit CopyOp or auto-deduced)
+      // Derive the auto aux-load width from the epilogue tile (which drives the partitioning
+      // via mma_per_epi), not the raw MMA atom, so it tracks the (possibly widened) epilogue
+      // tile and stays consistent with the aux/D store width (CUTLASS9-656).
       using ActualCopyOpG2R = cute::conditional_t<
         cute::is_void_v<CopyOpG2R_>,
-        XE_LOAD_2D<CopyBits, 
-                   cute::gcd(8, get<0>(MMATile{})), 
-                   cute::gcd(512 / CopyBits, get<1>(MMATile{}))>,
+        XE_LOAD_2D<CopyBits,
+                   cute::gcd(8, get<0>(cute::remove_cvref_t<decltype(args.epi_tile)>{})),
+                   cute::gcd(512 / CopyBits, get<1>(cute::remove_cvref_t<decltype(args.epi_tile)>{}))>,
         CopyOpG2R_
       >;
       

@@ -270,10 +270,19 @@ public:
 
     using MMATile = decltype(take<0,2>(typename TiledMMA::AtomShape_MNK{}));
 
+    // Per-subgroup accumulator MMA-iteration counts (needed for the guarded widen below).
+    static constexpr auto _acc_mma_m = size<1>(Accumulator{});
+    static constexpr auto _acc_mma_n = size<2>(Accumulator{});
+
     static constexpr int EpiRPreferred = 8;
     static constexpr int EpiCPreferred = 512 / cute::min(sizeof_bits_v<NonVoidElementC>, sizeof_bits_v<ElementD>);    // 1 cache line
     static constexpr int EpiR = cute::gcd(EpiRPreferred, get<0>(MMATile{}));
-    static constexpr int EpiC = cute::gcd(EpiCPreferred, get<1>(MMATile{}));
+    // Widen the epilogue tile's N to a full cache line (grouping adjacent N MMA-atoms into
+    // one wider block2d store) when it is provably safe, else fall back to the single-atom
+    // width gcd(EpiCPreferred, MMATile-N).  A too-narrow (half-cache-line) store roughly
+    // halves store bandwidth and dominates runtime at small K, where the epilogue is not
+    // amortized by the mainloop (CUTLASS9-656).
+    static constexpr int EpiC = cute::xe_guarded_store_width(EpiCPreferred, get<1>(MMATile{}), _acc_mma_n);
 
     using DefaultEpilogueTile = Shape<Int<EpiR>, Int<EpiC>>;
     using RequestedEpilogueTile = conditional_t<is_void_v<EpilogueTile_> || is_same_v<EpilogueTile_, EpilogueTileAuto>,
@@ -284,9 +293,9 @@ public:
     // iteration count in each dimension must be evenly divisible.  Otherwise flat_divide
     // creates phantom iterations that read out-of-bounds accumulator data and corrupt
     // the output.  Fall back to the safe DefaultEpilogueTile when divisibility fails.
+    // (The auto DefaultEpilogueTile above is already guaranteed to divide the accumulator:
+    //  xe_guarded_store_width only returns the widened N when _acc_mma_n % group == 0.)
     static constexpr auto _req_mma_per_epi = shape_div(RequestedEpilogueTile{}, MMATile{});
-    static constexpr auto _acc_mma_m = size<1>(Accumulator{});
-    static constexpr auto _acc_mma_n = size<2>(Accumulator{});
     static constexpr bool _epi_divides = (_acc_mma_m % get<0>(_req_mma_per_epi) == 0) &&
                                          (_acc_mma_n % get<1>(_req_mma_per_epi) == 0);
     using EpilogueTile = conditional_t<_epi_divides, RequestedEpilogueTile, DefaultEpilogueTile>;
