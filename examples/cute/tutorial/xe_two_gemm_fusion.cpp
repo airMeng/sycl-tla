@@ -207,7 +207,11 @@ gemm_two_stage_device(ATensor   const& A,     // (M, K)
   Tensor tIrI = thr_slm_ld.retile_D(tArA_2);
   Tensor tIsI = thr_slm_ld.partition_S(SInTensor);
 
-  Tensor tCgD = thr_mma.partition_C(gD_2);
+  /* Stage-2 D store: take the store fragment/tensor from copy_d so its width can exceed
+     one MMA N-atom; reorder() bridges the accumulator's MMA-C layout into it. */
+  auto thr_copy_d = copy_d.get_slice(local_id);
+  auto tDrD = thr_copy_d.partition_sg_fragment_S(gD_2);
+  Tensor tCgD = thr_copy_d.partition_D(gD_2);
 
   auto prefetch_a = make_block_2d_prefetch(copy_a);
   auto prefetch_b = make_block_2d_prefetch(copy_b);
@@ -267,7 +271,8 @@ gemm_two_stage_device(ATensor   const& A,     // (M, K)
     gemm(mma, tCrA_2, tCrB_2, tCrAcc);
   }
 
-  copy(copy_d, tCrAcc, tCgD);
+  reorder(tCrAcc, tDrD);
+  copy(copy_d, tDrD, tCgD);
 }
 
 // ---------------------------------------------------------------------------

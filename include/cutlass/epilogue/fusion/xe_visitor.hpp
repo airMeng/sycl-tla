@@ -374,8 +374,8 @@ struct XeAuxStore {
       // Block 2D copy path (explicit CopyOp or auto-deduced)
       using ActualCopyOpR2G = cute::conditional_t<
         cute::is_void_v<CopyOpR2G_>,
-        XE_STORE_2D<CopyBits, 
-                   cute::gcd(8, get<0>(MMATile{})), 
+        XE_STORE_2D<CopyBits,
+                   cute::gcd(8, get<0>(MMATile{})),
                    cute::gcd(512 / CopyBits, get<1>(MMATile{}))>,
         CopyOpR2G_
       >;
@@ -667,8 +667,8 @@ struct XeAuxLoad {
       // Block 2D copy path (explicit CopyOp or auto-deduced)
       using ActualCopyOpG2R = cute::conditional_t<
         cute::is_void_v<CopyOpG2R_>,
-        XE_LOAD_2D<CopyBits, 
-                   cute::gcd(8, get<0>(MMATile{})), 
+        XE_LOAD_2D<CopyBits,
+                   cute::gcd(8, get<0>(MMATile{})),
                    cute::gcd(512 / CopyBits, get<1>(MMATile{}))>,
         CopyOpG2R_
       >;

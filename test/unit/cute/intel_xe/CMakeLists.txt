@@ -45,6 +45,7 @@ cutlass_test_unit_add_executable(
   copy_subgroup_block.cpp
   copy_block.cpp
   copy_scatter.cpp
+  copy_d_selection.cpp
   mma.cpp
   tiled_mma.cpp
   xe_copy_2d_test.cpp

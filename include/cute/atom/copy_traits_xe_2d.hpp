@@ -1152,10 +1152,19 @@ make_block_2d_copy_D(TiledMMA           const& mma,         // TiledMMA instance
                      Stride<Strides...> const& gstride)     // Global memory strides
 {
   using MMAType = typename TiledMMA::ValTypeD;
-  auto cD = make_identity_tensor(select<0,1>(mma.tile_mnk()));
-  auto op = block_2d_selector<ValType, MMAType, true>(
-    mma.get_slice(0).atom_partition_C(cD).layout(), gstride
-  );
+  // Size the D store from the *per-subgroup output tile* rather than a single MMA-C atom.
+  // A single DPAS N-atom is only 16 elements (half a 64B cache line for 16-bit D), which
+  // halves store bandwidth and dominates small-K GEMM runtime (CUTLASS9-656).  Each
+  // subgroup owns a contiguous N run of (tile_n / sg_n) columns, so feeding the selector
+  // that sub-tile lets it size a full-cache-line store from a real coordinate tiling --
+  // no separate atom-width rewrite, and the width naturally falls back to one atom when
+  // the per-subgroup N run is itself only one atom wide.  The consumer bridges the MMA-C
+  // accumulator into this (wider) copy layout via partition_sg_fragment_S + reorder.
+  auto thr_vmnk = mma.get_thr_layout_vmnk();                                         // (ThrV,ThrM,ThrN,ThrK)
+  auto sg_tile  = shape_div(select<0,1>(mma.tile_mnk()),
+                            make_shape(size<1>(shape(thr_vmnk)), size<2>(shape(thr_vmnk))));
+  auto cD = make_identity_tensor(sg_tile);
+  auto op = block_2d_selector<ValType, MMAType, true>(cD.layout(), gstride);
   return make_block_2d_copy_CD<ValType>(op, mma, gstride);
 }
 
